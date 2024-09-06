@@ -16,6 +16,7 @@ class CertificateFactory:
 
 		self.temp_directory = None
 		self.original_working_directory = None
+		self.node_private_key_path = None  # 既存のノード秘密鍵ファイルのパス
 
 	def __enter__(self):
 		self.temp_directory = tempfile.TemporaryDirectory()
@@ -33,6 +34,28 @@ class CertificateFactory:
 
 		return args
 
+	def set_node_private_key(self, node_key_path):
+		"""既存のノード秘密鍵を使用するための設定"""
+
+		# node_key_path が bytes 型で渡されている場合、文字列にデコード
+		if isinstance(node_key_path, bytes):
+			node_key_path = node_key_path.decode('utf-8')
+
+		# node_key_path がファイルパスとして渡されているかを確認
+		self.node_private_key_path = Path(node_key_path).absolute()
+
+		# ファイルが存在するか確認
+		if not self.node_private_key_path.exists():
+			raise RuntimeError(f'Node private key does not exist at path {self.node_private_key_path}')
+
+		# 存在する秘密鍵ファイルを読み込み
+		with open(self.node_private_key_path, 'r') as key_file:
+			self.node_private_key = key_file.read()
+
+		# 読み込んだ秘密鍵が正しい形式であるか確認（オプション: PEM形式のチェックなど）
+		if not self.node_private_key.startswith('-----BEGIN PRIVATE KEY-----'):
+			raise RuntimeError(f'Invalid private key format in file {self.node_private_key_path}')
+
 	def extract_ca_public_key(self):
 		"""Extracts a CA public key from a CA private key."""
 
@@ -45,13 +68,9 @@ class CertificateFactory:
 
 	def generate_random_node_private_key(self):
 		"""Generates a random NODE private key."""
-
+		if self.node_private_key_path:
+			raise RuntimeError('Node private key is already set. Cannot generate a new one.')
 		self._generate_random_private_key('node.key.pem')
-
-	def generate_random_ca_private_key(self):
-		"""Generates a random CA private key."""
-
-		self._generate_random_private_key(self.ca_key_path.name)
 
 	def _generate_random_private_key(self, name):
 		self.openssl_executor.dispatch([
@@ -140,11 +159,14 @@ class CertificateFactory:
 				'authorityKeyIdentifier = keyid,issuer'
 			]))
 
+		# 既存のノード秘密鍵を使用するか、ランダムに生成した鍵を使用
+		node_key = self.node_private_key_path if self.node_private_key_path else 'node.key.pem'
+
 		# prepare node certificate signing request
 		self.openssl_executor.dispatch([
 			'req',
 			'-config', 'node.cnf',
-			'-key', 'node.key.pem',
+			'-key', str(node_key),
 			'-new',
 			'-out', 'node.csr.pem'
 		])
